@@ -1,7 +1,6 @@
 
 import sys
 import codecs
-from urllib2 import HTTPError
 from urlparse import urlparse
 from urllib import urlopen
 from struct import unpack
@@ -10,14 +9,13 @@ from struct import unpack
 # a dictionary of attributes. Constructed from a sub-string of a string
 # representing the HTML content.
 class HTMLElement:
-	def __init__(self, html, start, end):
-		elem = html[start:end]
-
+	def __init__(self, elem):
 		endname = elem.find(" ")
 		if endname == -1: endname = len(elem)
 
 		self.name = elem[:endname]
 		self.attr = {}
+		self.children = []
 
 		RemoveChar = lambda x: x.strip("\ \n\r\t\"=")
 
@@ -38,24 +36,33 @@ class HTMLElement:
 			value = RemoveChar(parts[0])
 
 			self.attr[key] = value
+
+# Return a tuple containing the start and end index inside html that
+# forms a full html element (e.g. <img src='test.png'>).
+def FindNextHTMLElement(html, begin):
+	start = html.find("<", begin)
+	if start == -1: return None
+	start = start + 1
+
+	end = html.find(">", start)
+	if end == -1: return None
+
+	return (start,end)
 		
 # Return a dictionary where each key is a element name in the 
-# html page and the value is a list of HTMLElement objects
+# html page and the value is a list of HTMLElement objects.
+# Start and end elements (<img> and </img>) are stored as 
+# separate keys.
 def GetHTMLElem(html):
 	elements = {}
-	start = 0
-	end = 0
-	while start != -1:
-		start = html.find("<", end)
-		if start == -1: break
-		start = start + 1
+	pos = FindNextHTMLElement(html, 0)
 
-		end = html.find(">", start)
-		if end == -1: break;
-
-		elem = HTMLElement(html, start, end)
+	while pos != None:
+		elem = HTMLElement(html[pos[0]:pos[1]])
 		if elem.name in elements: elements[elem.name].append(elem)
 		else: elements[elem.name] = [elem]
+
+		pos = FindNextHTMLElement(html, pos[1])
 
 	return elements
 
@@ -118,60 +125,71 @@ def ProcessHTML(data, dataurl, datalocalpath):
 		if (absurl in replaced) == False:
 			replaced[relurl] = localpath
 
-	for e in allelements["img"]:
-		if ("src" in e.attr) == False: continue
+	if "img" in allelements:
+		for e in allelements["img"]:
+			if ("src" in e.attr) == False: continue
 
-		relurl = e.attr["src"]
-		absurl = RelToAbsPath(relurl, dataurl)
+			relurl = e.attr["src"]
+			absurl = RelToAbsPath(relurl, dataurl)
 
-		localpath = "imgh"+str(filecount)+GetExt(absurl)
-		filecount = filecount + 1
+			localpath = "imgh"+str(filecount)+GetExt(absurl)
+			filecount = filecount + 1
 
-		AddHTMLLink(absurl, relurl, localpath, ProcessRaw)
+			AddHTMLLink(absurl, relurl, localpath, ProcessRaw)
 
-	for e in allelements["link"]:
-		if ("href" in e.attr) == False: continue
-		if ("rel" in e.attr) == False: continue
-		if e.attr["rel"] != "stylesheet": continue
+	if "link" in allelements:
+		for e in allelements["link"]:
+			if ("href" in e.attr) == False: continue
+			if ("rel" in e.attr) == False: continue
+			if e.attr["rel"] != "stylesheet": continue
 
-		relurl = e.attr["href"]
-		absurl = RelToAbsPath(relurl, dataurl)
+			relurl = e.attr["href"]
+			absurl = RelToAbsPath(relurl, dataurl)
 
-		localpath = "css"+str(filecount)+".css"
-		filecount = filecount + 1
+			localpath = "css"+str(filecount)+".css"
+			filecount = filecount + 1
 
-		AddHTMLLink(absurl, relurl, localpath, ProcessCSS)
+			AddHTMLLink(absurl, relurl, localpath, ProcessCSS)
 
-	for e in allelements["script"]:
-		if ("src" in e.attr) == False: continue
+	if "script" in allelements:
+		for e in allelements["script"]:
+			if ("src" in e.attr) == False: continue
 
-		relurl = e.attr["src"]
-		absurl = RelToAbsPath(relurl, dataurl)
+			relurl = e.attr["src"]
+			absurl = RelToAbsPath(relurl, dataurl)
 
-		localpath = "script"+str(filecount)+".js"
-		filecount = filecount + 1
+			localpath = "script"+str(filecount)+".js"
+			filecount = filecount + 1
 
-		AddHTMLLink(absurl, relurl, localpath, ProcessRaw)
+			AddHTMLLink(absurl, relurl, localpath, ProcessRaw)
 
 	# Replace all links in the page and save it to disk.
 	for r in replaced.keys():
 		html = html.replace(r, replaced[r])
 
-	print "Saving " + datalocalpath
+	print "Saving " + datalocalpath,
 
-	f = codecs.open(datalocalpath, encoding="utf-8", mode="w+")
-	f.write(html)
-	f.close()
+	try:
+		f = codecs.open(datalocalpath, encoding="utf-8", mode="w+")
+		f.write(html)
+		f.close()
+		print "OK!"
+	except IOError:
+		print "FAIL!"
 
 	return links
 
 # Given some raw data downloaded through http, save it to disk.
 def ProcessRaw(data, dataurl, datalocalpath):
-	print "Saving " + datalocalpath
+	print "Saving " + datalocalpath,
 
-	f = open(datalocalpath, "wb")
-	f.write(data)
-	f.close()
+	try:
+		f = open(datalocalpath, "wb")
+		f.write(data)
+		f.close()
+		print "OK!"
+	except IOError:
+		print "FAIL!"
 
 	return []
 
@@ -215,17 +233,31 @@ def ProcessCSS(data, dataurl, datalocalpath):
 	for r in replaced.keys():
 		css = css.replace(r, replaced[r])
 
-	print "Saving " + datalocalpath
+	print "Saving " + datalocalpath,
 
-	f = codecs.open(datalocalpath, encoding="utf-8", mode="w+")
-	f.write(css)
-	f.close()
+	try:
+		f = codecs.open(datalocalpath, encoding="utf-8", mode="w+")
+		f.write(css)
+		f.close()
+		print "OK!"
+	except IOError:
+		print "FAIL!"
 
 	return links
 
-#URL_HTML = "http://bheath.devio.us/pathfinding.html"
-URL_HTML = "http://news.bbc.co.uk"
-LOCAL_PATH = ".\\bbcnews"
+def ShowUsage():
+	print "Usage: savepage.py <url> <outpath>"
+
+# Get the command line parameters.
+if len(sys.argv) < 3:
+	ShowUsage()
+	sys.exit("ERROR: Not enough command line parameters provided!")
+
+URL_HTML = sys.argv[1]
+LOCAL_PATH = sys.argv[2]
+
+# urllib requries the http:// prefix.
+if URL_HTML.find("http://") == -1: URL_HTML = "http://"+URL_HTML
 
 # A queue of all links to be downloaded and processed. Start with the source HTML page.
 
