@@ -1,73 +1,13 @@
 
 import sys
 import codecs
+from htmlelem import GetHTMLElements
 from urlparse import urlparse
 from urllib import urlopen
 from struct import unpack
 
-# An object representing an html element, containing a name and
-# a dictionary of attributes. Constructed from a sub-string of a string
-# representing the HTML content.
-class HTMLElement:
-	def __init__(self, elem):
-		endname = elem.find(" ")
-		if endname == -1: endname = len(elem)
-
-		self.name = elem[:endname]
-		self.attr = {}
-		self.children = []
-
-		RemoveChar = lambda x: x.strip("\ \n\r\t\"=")
-
-		# Extrct attributes from the element by partitioning
-		# the string around the '=' character (left of this character
-		# is the key and to the right is the value).
-		parts = ('a','a',elem[endname:])
-		while parts[2].find("=") != -1:
-			parts = parts[2].partition("=")
-			key = RemoveChar(parts[0])
-
-			# If the right hand partition is empty there exists
-			# an attribute at the end of an element that has no value.
-			if len(parts[2]) == 0: break
-
-			valsep = parts[2][0]
-			parts = parts[2][1:].partition(valsep)
-			value = RemoveChar(parts[0])
-
-			self.attr[key] = value
-
-# Return a tuple containing the start and end index inside html that
-# forms a full html element (e.g. <img src='test.png'>).
-def FindNextHTMLElement(html, begin):
-	start = html.find("<", begin)
-	if start == -1: return None
-	start = start + 1
-
-	end = html.find(">", start)
-	if end == -1: return None
-
-	return (start,end)
-		
-# Return a dictionary where each key is a element name in the 
-# html page and the value is a list of HTMLElement objects.
-# Start and end elements (<img> and </img>) are stored as 
-# separate keys.
-def GetHTMLElem(html):
-	elements = {}
-	pos = FindNextHTMLElement(html, 0)
-
-	while pos != None:
-		elem = HTMLElement(html[pos[0]:pos[1]])
-		if elem.name in elements: elements[elem.name].append(elem)
-		else: elements[elem.name] = [elem]
-
-		pos = FindNextHTMLElement(html, pos[1])
-
-	return elements
-
-# Convert a relative path (relative to an absolute path) to an absolute path
-# on the host.
+# Given a absolute path (absurl) return the absolute version of a 
+# relative path 'relurl'.
 def RelToAbsPath(relurl, absurl):
 	final = relurl
 	if final.find("http") == -1:
@@ -98,21 +38,30 @@ def GetExt(path):
 
 	return ext
 
-# This dictionary will track all links that have been downloaded or queued to download
+# The dictionary 'allLinks' will track all links that have been downloaded or queued to download
 # along with the corresponding local path name. This prevents duplicate files being download.
 
 allLinks = {} # = dict[absurl, localpath]
 
 filecount = 0
 
-# Given data representing an HTML page, save it to disk and extract all
-# the embedded links and returning them as a list.
-def ProcessHTML(data, dataurl, datalocalpath):
+# Handle Functions:
+#	These are functions used to process a particular type of content,
+#	extracting any further links that need to be downloaded. 
+#
+#	The handle function has two parameters: a byte array of data and 
+#	the url that this data came from. 
+#	
+#	Each handle will return a tuple containing a modified version of 
+#	the data to be saved (as a bytearray) to disc and a list of urls 
+#	to be added to the download queue (type[absurl, localpath, handle]).
+
+def HandleHTML(data, dataurl):
 	global filecount
 	global allLinks
 
 	html = data.decode("utf-8", "strict")
-	allelements = GetHTMLElem(html)
+	allelements = GetHTMLElements(html)[1]
 
 	links = []		# = list[tuple[absurl, localpath, process]]
 	replaced = {}	# = dict[relurl, local]
@@ -135,7 +84,7 @@ def ProcessHTML(data, dataurl, datalocalpath):
 			localpath = "imgh"+str(filecount)+GetExt(absurl)
 			filecount = filecount + 1
 
-			AddHTMLLink(absurl, relurl, localpath, ProcessRaw)
+			AddHTMLLink(absurl, relurl, localpath, HandleRaw)
 
 	if "link" in allelements:
 		for e in allelements["link"]:
@@ -149,7 +98,7 @@ def ProcessHTML(data, dataurl, datalocalpath):
 			localpath = "css"+str(filecount)+".css"
 			filecount = filecount + 1
 
-			AddHTMLLink(absurl, relurl, localpath, ProcessCSS)
+			AddHTMLLink(absurl, relurl, localpath, HandleCSS)
 
 	if "script" in allelements:
 		for e in allelements["script"]:
@@ -161,41 +110,26 @@ def ProcessHTML(data, dataurl, datalocalpath):
 			localpath = "script"+str(filecount)+".js"
 			filecount = filecount + 1
 
-			AddHTMLLink(absurl, relurl, localpath, ProcessRaw)
+			AddHTMLLink(absurl, relurl, localpath, HandleRaw)
+
+	# Process any embedded CSS.
+	if "style" in allelements:
+		for e in allelements["style"]:
+			stylevalue = e.children[0].value
+			resultHandle = HandleCSS(stylevalue, dataurl)
+			links = links + resultHandle[1]
+			replaced[stylevalue] = resultHandle[0]
 
 	# Replace all links in the page and save it to disk.
 	for r in replaced.keys():
 		html = html.replace(r, replaced[r])
 
-	print "Saving " + datalocalpath,
+	return (html, links)
 
-	try:
-		f = codecs.open(datalocalpath, encoding="utf-8", mode="w+")
-		f.write(html)
-		f.close()
-		print "OK!"
-	except IOError:
-		print "FAIL!"
+def HandleRaw(data, dataurl):
+	return (data, [])
 
-	return links
-
-# Given some raw data downloaded through http, save it to disk.
-def ProcessRaw(data, dataurl, datalocalpath):
-	print "Saving " + datalocalpath,
-
-	try:
-		f = open(datalocalpath, "wb")
-		f.write(data)
-		f.close()
-		print "OK!"
-	except IOError:
-		print "FAIL!"
-
-	return []
-
-# Given data representing a CSS file, extract all image
-# attribute urls.
-def ProcessCSS(data, dataurl, datalocalpath):
+def HandleCSS(data, dataurl):
 	global filecount
 	global allLinks
 
@@ -214,7 +148,7 @@ def ProcessCSS(data, dataurl, datalocalpath):
 		end = css.find(")", start)
 		if end == -1: break
 
-		relurl = css[start+4:end]
+		relurl = css[start+4:end].strip("\'\"")
 		absurl = RelToAbsPath(relurl, dataurl)
 
 		localpath = "imgcss"+str(filecount)+GetExt(relurl)
@@ -222,7 +156,7 @@ def ProcessCSS(data, dataurl, datalocalpath):
 
 		if (absurl in allLinks) == False:
 			allLinks[absurl] = localpath
-			links.append((absurl, localpath, ProcessRaw))
+			links.append((absurl, localpath, HandleRaw))
 
 		if (absurl in replaced) == False:
 			replaced[relurl] = localpath
@@ -233,17 +167,7 @@ def ProcessCSS(data, dataurl, datalocalpath):
 	for r in replaced.keys():
 		css = css.replace(r, replaced[r])
 
-	print "Saving " + datalocalpath,
-
-	try:
-		f = codecs.open(datalocalpath, encoding="utf-8", mode="w+")
-		f.write(css)
-		f.close()
-		print "OK!"
-	except IOError:
-		print "FAIL!"
-
-	return links
+	return (css, links)
 
 def ShowUsage():
 	print "Usage: savepage.py <url> <outpath>"
@@ -261,9 +185,9 @@ if URL_HTML.find("http://") == -1: URL_HTML = "http://"+URL_HTML
 
 # A queue of all links to be downloaded and processed. Start with the source HTML page.
 
-queue = []	# list[tuple[absurl, localpath, process]]
+queue = []	# list[tuple[absurl, localpath, handle]]
 
-queue.append((URL_HTML, "main.html", ProcessHTML))
+queue.append((URL_HTML, "main.html", HandleHTML))
 
 while len(queue) > 0:
 	item = queue[0]
@@ -275,12 +199,25 @@ while len(queue) > 0:
 		handle.close()
 		print "OK!"
 
-		# Process this file, adding any new links to the queue and
-		# saving the link to disk (all links in the data will be modified
-		# to the local version before being saved).
-		queue = queue + item[2](data, item[0], LOCAL_PATH+"\\"+item[1])
+		# Call the file's handle. Returns the data with modified links
+		# and a list of new links to add to the queue.
+		handleResult = item[2](data, item[0])
+
+		# Save the modified byte array to disc.
+		try:
+			filename = LOCAL_PATH+"\\"+item[1]
+			print "Saving " + filename
+			f = open(filename, "wb")
+			f.write(handleResult[0])
+			f.close()
+			print "OK!"
+		except IOError:
+			print "DISC FAIL!"
+
+		# Add any new links to the queue.
+		queue = queue + handleResult[1]
 	except IOError:
-		print "FAIL!"
+		print "URL FAIL!"
 
 	queue = queue[1:]
 
