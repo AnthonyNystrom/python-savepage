@@ -1,9 +1,17 @@
 python-savepage - Created by Bradley Heath (@dogpellet)
 
-A script that can download web pages and all referenced JavaScript, images 
-and CSS files to disk so that the page can be read offline.
+A python script to download an HTML page and any links to images, CSS and javascript.
+
+Features:
+	- Download images in the HTML page as well as in linked CSS files or embedded CSS.
+	- Files are stored locally with unique filenames and all references in any HTML and CSS
+	  are modified.
+
+Limitation:
+	- Will not download links created by dynamic JavaScript (e.g any JS that calls 
+	  document.CreateElement("img") will be missed by python-savepage).
 
 savepage.py <url> <outpath>
-A PC command line version of the tool that downloads the web page at
+A command line version of the tool that downloads the web page at
 <url> and saves it to <outpath>.
 
